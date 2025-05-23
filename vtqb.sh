@@ -1,101 +1,252 @@
-#!/bin/bash
-
-set -e
-
-# 清屏
+#!/bin/sh
 tput sgr0; clear
 
-## 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-## 日志函数
-info()    { echo -e "${GREEN}[INFO]${NC} $1"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
-fail()    { echo -e "${RED}[ERROR]${NC} $1" >&2; }
-exit_fail() { fail "$1"; exit 1; }
-
-## 检查是否以 root 权限运行
-if [ "$(id -u)" != "0" ]; then
-  exit_fail "请以 root 用户或使用 sudo 运行此脚本"
+## Load Seedbox Components
+source <(wget -qO- https://raw.githubusercontent.com/jerry048/Seedbox-Components/main/seedbox_installation.sh)
+# Check if Seedbox Components is successfully loaded
+if [ $? -ne 0 ]; then
+	echo "Component ~Seedbox Components~ failed to load"
+	echo "Check connection with GitHub"
+	exit 1
 fi
 
-## 操作系统检测
-check_os_version() {
-  if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS=$NAME
-    VER=$VERSION_ID
-  elif type lsb_release >/dev/null 2>&1; then
-    OS=$(lsb_release -si)
-    VER=$(lsb_release -sr)
-  elif [ -f /etc/lsb-release ]; then
-    . /etc/lsb-release
-    OS=$DISTRIB_ID
-    VER=$DISTRIB_RELEASE
-  elif [ -f /etc/debian_version ]; then
-    OS=Debian
-    VER=$(cat /etc/debian_version)
-  else
-    exit_fail "不支持的操作系统，请使用 Debian 或 Ubuntu"
-  fi
+## Load loading animation
+source <(wget -qO- https://raw.githubusercontent.com/Silejonu/bash_loading_animations/main/bash_loading_animations.sh)
+# Check if bash loading animation is successfully loaded
+if [ $? -ne 0 ]; then
+	fail "Component ~Bash loading animation~ failed to load"
+	fail_exit "Check connection with GitHub"
+fi
+# Run BLA::stop_loading_animation if the script is interrupted
+trap BLA::stop_loading_animation SIGINT
 
-  if [[ ! "$OS" =~ "Debian" && ! "$OS" =~ "Ubuntu" ]]; then
-    exit_fail "仅支持 Debian 和 Ubuntu 系统"
-  fi
+## Installation environment Check
+info "Checking Installation Environment"
+# Check Root Privilege
+if [ $(id -u) -ne 0 ]; then 
+    fail_exit "This script needs root permission to run"
+fi
 
-  if [[ "$OS" == "Debian" && "$VER" < 10 ]]; then
-    exit_fail "Debian 版本必须 >= 10"
-  fi
+# Linux Distro Version check
+if [ -f /etc/os-release ]; then
+	. /etc/os-release
+	OS=$NAME
+	VER=$VERSION_ID
+elif type lsb_release >/dev/null 2>&1; then
+	OS=$(lsb_release -si)
+	VER=$(lsb_release -sr)
+elif [ -f /etc/lsb-release ]; then
+	. /etc/lsb-release
+	OS=$DISTRIB_ID
+	VER=$DISTRIB_RELEASE
+elif [ -f /etc/debian_version ]; then
+	OS=Debian
+	VER=$(cat /etc/debian_version)
+elif [ -f /etc/SuSe-release ]; then
+	OS=SuSe
+elif [ -f /etc/redhat-release ]; then
+	OS=Redhat
+else
+	OS=$(uname -s)
+	VER=$(uname -r)
+fi
 
-  if [[ "$OS" == "Ubuntu" && "$VER" < 20.04 ]]; then
-    exit_fail "Ubuntu 版本必须 >= 20.04"
-  fi
-}
+if [[ ! "$OS" =~ "Debian" ]] && [[ ! "$OS" =~ "Ubuntu" ]]; then	#Only Debian and Ubuntu are supported
+	fail "$OS $VER is not supported"
+	info "Only Debian 10+ and Ubuntu 20.04+ are supported"
+	exit 1
+fi
 
-## 安装 Docker
-install_docker() {
-  if ! command -v docker > /dev/null; then
-    info "正在安装 Docker..."
-    apt-get update -qq
-    apt-get install -y apt-transport-https ca-certificates curl software-properties-common > /dev/null
+if [[ "$OS" =~ "Debian" ]]; then	#Debian 10+ are supported
+	if [[ ! "$VER" =~ "10" ]] && [[ ! "$VER" =~ "11" ]] && [[ ! "$VER" =~ "12" ]]; then
+		fail "$OS $VER is not supported"
+		info "Only Debian 10+ are supported"
+		exit 1
+	fi
+fi
 
-    # 下载 Docker 的官方 GPG 密钥，并将其添加到 trusted.gpg.d 目录
-    mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+if [[ "$OS" =~ "Ubuntu" ]]; then #Ubuntu 20.04+ are supported
+	if [[ ! "$VER" =~ "20" ]] && [[ ! "$VER" =~ "22" ]] && [[ ! "$VER" =~ "23" ]]; then
+		fail "$OS $VER is not supported"
+		info "Only Ubuntu 20.04+ is supported"
+		exit 1
+	fi
+fi
 
-    # 设置 Docker 的 APT 仓库
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+## Read input arguments
+while getopts "u:p:c:q:l:rbvx3oh" opt; do
+  case ${opt} in
+	u ) # process option username
+		username=${OPTARG}
+		;;
+	p ) # process option password
+		password=${OPTARG}
+		;;
+	c ) # process option cache
+		cache=${OPTARG}
+		#Check if cache is a number
+		while true
+		do
+			if ! [[ "$cache" =~ ^[0-9]+$ ]]; then
+				warn "Cache must be a number"
+				need_input "Please enter a cache size (in MB):"
+				read cache
+			else
+				break
+			fi
+		done
+		#Converting the cache to qBittorrent's unit (MiB)
+		qb_cache=$cache
+		;;
+	q ) # process option qbittorrent version
+		qb_install=1
+		qb_ver=("qBittorrent-${OPTARG}")
+		;;
+	l ) # process option libtorrent
+		lib_ver=("libtorrent-${OPTARG}")
+		#Check if qBittorrent version is specified
+		if [ -z "$qb_ver" ]; then
+			warn "You must choose a qBittorrent version for your libtorrent install"
+			qb_ver_choose
+		fi
+		;;
+	r ) # process option autoremove
+		autoremove_install=1
+		;;
+	b ) # process option autobrr
+		autobrr_install=1
+		;;
+	v ) # process option vertex
+		vertex_install=1
+		;;
+	x ) # process option bbr
+		unset bbrv3_install
+		bbrx_install=1	  
+		;;
+	3 ) # process option bbr
+		unset bbrx_install
+		bbrv3_install=1
+		;;
+	o ) # process option port
+		if [[ -n "$qb_install" ]]; then
+			need_input "Please enter qBittorrent Web UI port:"
+			read qb_port
+			while true
+			do
+				if ! [[ "$qb_port" =~ ^[0-9]+$ ]]; then
+					warn "Port must be a number"
+					need_input "Please enter qBittorrent Web UI port:"
+					read qb_port
+				else
+					break
+				fi
+			done
+			need_input "Please enter qBittorrent incoming port:"
+			read qb_incoming_port
+			while true
+			do
+				if ! [[ "$qb_incoming_port" =~ ^[0-9]+$ ]]; then
+						warn "Port must be a number"
+						need_input "Please enter qBittorrent incoming port:"
+						read qb_incoming_port
+				else
+					break
+				fi
+			done
+		fi
+		if [[ -n "$autobrr_install" ]]; then
+			need_input "Please enter autobrr port:"
+			read autobrr_port
+			while true
+			do
+				if ! [[ "$autobrr_port" =~ ^[0-9]+$ ]]; then
+					warn "Port must be a number"
+					need_input "Please enter autobrr port:"
+					read autobrr_port
+				else
+					break
+				fi
+			done
+		fi
+		if [[ -n "$vertex_install" ]]; then
+			need_input "Please enter vertex port:"
+			read vertex_port
+			while true
+			do
+				if ! [[ "$vertex_port" =~ ^[0-9]+$ ]]; then
+					warn "Port must be a number"
+					need_input "Please enter vertex port:"
+					read vertex_port
+				else
+					break
+				fi
+			done
+		fi
+		;;
+	h ) # process option help
+		info "Help:"
+		info "Usage: ./Install.sh -u <username> -p <password> -c <Cache Size(unit:MiB)> -q <qBittorrent version> -l <libtorrent version> -b -v -r -3 -x -p"
+		info "Example: ./Install.sh -u jerry048 -p 1LDw39VOgors -c 3072 -q 4.3.9 -l v1.2.19 -b -v -r -3"
+		source <(wget -qO- https://raw.githubusercontent.com/jerry048/Seedbox-Components/main/Torrent%20Clients/qBittorrent/qBittorrent_install.sh)
+		seperator
+		info "Options:"
+		need_input "1. -u : Username"
+		need_input "2. -p : Password"
+		need_input "3. -c : Cache Size for qBittorrent (unit:MiB)"
+		echo -e "\n"
+		need_input "4. -q : qBittorrent version"
+		need_input "Available qBittorrent versions:"
+		tput sgr0; tput setaf 7; tput dim; history -p "${qb_ver_list[@]}"; tput sgr0
+		echo -e "\n"
+		need_input "5. -l : libtorrent version"
+		need_input "Available qBittorrent versions:"
+		tput sgr0; tput setaf 7; tput dim; history -p "${lib_ver_list[@]}"; tput sgr0
+		echo -e "\n"
+		need_input "6. -r : Install autoremove-torrents"
+		need_input "7. -b : Install autobrr"
+		need_input "8. -v : Install vertex"
+		need_input "9. -x : Install BBRx"
+		need_input "10. -3 : Install BBRv3"
+		need_input "11. -p : Specify ports for qBittorrent, autobrr and vertex"
+		need_input "12. -h : Display help message"
+		exit 0
+		;;
+	\? ) 
+		info "Help:"
+		info_2 "Usage: ./Install.sh -u <username> -p <password> -c <Cache Size(unit:MiB)> -q <qBittorrent version> -l <libtorrent version> -b -v -r -3 -x -p"
+		info_2 "Example ./Install.sh -u jerry048 -p 1LDw39VOgors -c 3072 -q 4.3.9 -l v1.2.19 -b -v -r -3"
+		exit 1
+		;;
+	esac
+done
 
-    apt-get update -qq
-    apt-get install -y docker-ce docker-ce-cli containerd.io > /dev/null
-    systemctl enable docker > /dev/null
-    systemctl start docker
-    info "Docker 安装完成！"
-  else
-    info "Docker 已安装。"
-  fi
-}
+# System Update & Dependencies Install
+info "Start System Update & Dependencies Install"
+update
 
-## 安装 qBittorrent 容器
-install_qbittorrent_container() {
-  local qb_user="$1"
-  local qb_pass="$2"
-  local qb_cache="$3"
-  local qb_port="$4"
-  local qb_incoming_port="$5"
+## Load qBittorrent Install Function (now via Docker)
+install_qBittorrent_container() {
+  local username="$1"
+  local password="$2"
+  local qb_ver="$3"
+  local lib_ver="$4"
+  local qb_cache="$5"
+  local qb_port="$6"
+  local qb_incoming_port="$7"
 
-  local PUID=$(id -u "$qb_user")
-  local PGID=$(id -g "$qb_user")
+  # Set default values if not provided
+  : "${qb_port:=8080}"
+  : "${qb_incoming_port:=6881}"
+
+  local PUID=$(id -u "$username")
+  local PGID=$(id -g "$username")
   local TZ=$(timedatectl show --property=Timezone --value)
 
-  local CONFIG_DIR="/home/$qb_user/.config/qbittorrent"
-  local DOWNLOAD_DIR="/home/$qb_user/downloads"
+  local CONFIG_DIR="/home/$username/.config/qbittorrent"
+  local DOWNLOAD_DIR="/home/$username/downloads"
 
   mkdir -p "$CONFIG_DIR" "$DOWNLOAD_DIR"
-  chown -R "$qb_user:$qb_user" "$CONFIG_DIR" "$DOWNLOAD_DIR"
+  chown -R "$username:$username" "$CONFIG_DIR" "$DOWNLOAD_DIR"
 
   info "启动 qBittorrent 容器..."
 
@@ -104,9 +255,9 @@ install_qbittorrent_container() {
     -e PUID=$PUID \
     -e PGID=$PGID \
     -e TZ="$TZ" \
-    -e WEBUI_PORT="$qb_port" \
-    -e U2BK_USERNAME="$qb_user" \
-    -e U2BK_PASSWORD="$qb_pass" \
+    -e WEBUI_PORT="8080" \
+    -e U2BK_USERNAME="$username" \
+    -e U2BK_PASSWORD="$password" \
     -e CACHE_SIZE="$qb_cache" \
     -p "$qb_port":8080 \
     -p "$qb_incoming_port":6881/tcp \
@@ -117,69 +268,108 @@ install_qbittorrent_container() {
     linuxserver/qbittorrent:latest
 
   info "qBittorrent 容器已启动！访问地址：http://$(hostname -I | awk '{print $1}'):$qb_port"
-  info "用户名: $qb_user"
-  info "密码: $qb_pass (请登录后尽快更改)"
+  info "用户名: $username"
+  info "密码: $password (请登录后尽快更改)"
 }
 
-## 主函数
-main() {
-  local username=""
-  local password=""
-  local cache=""
-  local qb_install=0
-  local qb_ver=""
-  local lib_ver=""
-  local qb_port=8080
-  local qb_incoming_port=6881
-  local vertex_install=0
-  local bbrx_install=0
-
-  while getopts "u:p:c:q:l:o:vxh" opt; do
-    case "$opt" in
-      u) username="$OPTARG" ;;
-      p) password="$OPTARG" ;;
-      c) cache="$OPTARG" ;;
-      q) qb_install=1; qb_ver="$OPTARG" ;;
-      l) lib_ver="$OPTARG" ;;
-      o) 
-        IFS="," read -r qb_port qb_incoming_port <<< "$OPTARG"
-        ;;
-      v) vertex_install=1 ;;
-      x) bbrx_install=1 ;;
-      h)
-        echo "Usage: $0 -u <username> -p <password> -c <cache size(MiB)> -q <qb version> -l <libtorrent version> [-o web,port]"
-        echo "示例: bash <(wget ...) -u user -p pass -c 3072 -q 4.3.9 -l v1.2.19 -v -x"
-        exit 0
-        ;;
-      *)
-        exit_fail "无效的参数"
-        ;;
-    esac
-  done
-
-  # 检查必要参数
-  if [[ $qb_install -eq 1 ]]; then
-    if [[ -z "$username" || -z "$password" || -z "$cache" ]]; then
-      exit_fail "安装 qBittorrent 需要指定用户名、密码和缓存大小"
-    fi
-  fi
-
-  check_os_version
-  install_docker
-
-  if [[ $qb_install -eq 1 ]]; then
-    install_qbittorrent_container "$username" "$password" "$cache" "$qb_port" "$qb_incoming_port"
-  fi
-
-  if [[ $vertex_install -eq 1 ]]; then
-    warn "Vertex 安装暂未实现"
-  fi
-
-  if [[ $bbrx_install -eq 1 ]]; then
-    warn "BBRx 设置暂未实现"
-  fi
-
-  info "安装已完成！"
+## Install function
+install_() {
+info_2 "$2"
+BLA::start_loading_animation "${BLA_classic[@]}"
+$1 1> /dev/null 2> $3
+if [ $? -ne 0 ]; then
+	fail_3 "FAIL" 
+else
+	info_3 "Successful"
+	export $4=1
+fi
+BLA::stop_loading_animation
 }
 
-main "$@"
+# qBittorrent
+if [[ ! -z "$qb_install" ]]; then
+	## Check if all the required arguments are specified
+	#Check if username is specified
+	if [ -z "$username" ]; then
+		warn "Username is not specified"
+		need_input "Please enter a username:"
+		read username
+	fi
+	#Check if password is specified
+	if [ -z "$password" ]; then
+		warn "Password is not specified"
+		need_input "Please enter a password:"
+		read password
+	fi
+	## Create user if it does not exist
+	if ! id -u $username > /dev/null 2>&1; then
+		useradd -m -s /bin/bash $username
+		# Check if the user is created successfully
+		if [ $? -ne 0 ]; then
+			warn "Failed to create user $username"
+			return 1
+		fi
+	fi
+	chown -R $username:$username /home/$username
+	#Check if cache is specified
+	if [ -z "$cache" ]; then
+		warn "Cache is not specified"
+		need_input "Please enter a cache size (in MB):"
+		read cache
+		#Check if cache is a number
+		while true
+		do
+			if ! [[ "$cache" =~ ^[0-9]+$ ]]; then
+				warn "Cache must be a number"
+				need_input "Please enter a cache size (in MB):"
+				read cache
+			else
+				break
+			fi
+		done
+		qb_cache=$cache
+	fi
+	#Check if qBittorrent port is specified
+	if [ -z "$qb_port" ]; then
+		qb_port=8080
+	fi
+	#Check if qBittorrent incoming port is specified
+	if [ -z "$qb_incoming_port" ]; then
+		qb_incoming_port=6881
+	fi
+
+	## qBittorrent install
+	install_ "install_qBittorrent_container $username $password $qb_ver $lib_ver $qb_cache $qb_port $qb_incoming_port" "Installing qBittorrent" "/tmp/qb_error" qb_install_success
+fi
+
+# autobrr Install
+if [[ ! -z "$autobrr_install" ]]; then
+	install_ install_autobrr_ "Installing autobrr" "/tmp/autobrr_error" autobrr_install_success
+fi
+
+# vertex Install
+if [[ ! -z "$vertex_install" ]]; then
+	install_ install_vertex_ "Installing vertex" "/tmp/vertex_error" vertex_install_success
+fi
+
+# autoremove-torrents Install
+if [[ ! -z "$autoremove_install" ]]; then
+	install_ install_autoremove-torrents_ "Installing autoremove-torrents" "/tmp/autoremove_error" autoremove_install_success
+fi
+
+seperator
+
+## Tunning
+info "Start Doing System Tunning"
+install_ tuned_ "Installing tuned" "/tmp/tuned_error" tuned_success
+install_ set_txqueuelen_ "Setting txqueuelen" "/tmp/txqueuelen_error" txqueuelen_success
+install_ set_file_open_limit_ "Setting File Open Limit" "/tmp/file_open_limit_error" file_open_limit_success
+
+# Check for Virtual Environment since some of the tunning might not work on virtual machine
+systemd-detect-virt > /dev/null
+if [ $? -eq 0 ]; then
+	warn "Virtualization is detected, skipping some of the tunning"
+	install_ disable_tso_ "Disabling TSO" "/tmp/tso_error" tso_success
+else
+	install_ set_disk_scheduler_ "Setting Disk Scheduler" "/tmp/disk_scheduler_error" disk_scheduler_success
+fi
