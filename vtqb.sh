@@ -61,8 +61,14 @@ install_docker() {
     info "正在安装 Docker..."
     apt-get update -qq
     apt-get install -y apt-transport-https ca-certificates curl software-properties-common > /dev/null
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add - > /dev/null
-    add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /dev/null
+
+    # 下载 Docker 的官方 GPG 密钥，并将其添加到 trusted.gpg.d 目录
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+    # 设置 Docker 的 APT 仓库
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
     apt-get update -qq
     apt-get install -y docker-ce docker-ce-cli containerd.io > /dev/null
     systemctl enable docker > /dev/null
