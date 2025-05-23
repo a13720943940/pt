@@ -17,7 +17,7 @@ if [ $? -ne 0 ]; then
 	fail "Component ~Bash loading animation~ failed to load"
 	fail_exit "Check connection with GitHub"
 fi
-# Run BLA::stop_loading_animation if the script is interrupted
+# Run BLA::stop_loading_imation if the script is interrupted
 trap BLA::stop_loading_animation SIGINT
 
 ## Install function
@@ -195,6 +195,7 @@ while getopts "u:p:c:q:l:rbvx3oh" opt; do
 					break
 				fi
 			done
+		fi
 		;;
 	h ) # process option help
 		info "Help:"
@@ -230,12 +231,30 @@ while getopts "u:p:c:q:l:rbvx3oh" opt; do
 		info_2 "Example ./Install.sh -u jerry048 -p 1LDw39VOgors -c 3072 -q 4.3.9 -l v1.2.19 -b -v -r -3"
 		exit 1
 		;;
-	esac
+  esac
 done
 
 # System Update & Dependencies Install
 info "Start System Update & Dependencies Install"
 update
+
+## Install Docker if not installed
+if ! command -v docker &> /dev/null; then
+    info "Docker not found, installing Docker..."
+    BLA::start_loading_animation "${BLA_classic[@]}"
+    curl -fsSL https://get.docker.com | sh
+    if [ $? -ne 0 ]; then
+        fail_3 "Docker installation failed"
+        exit 1
+    else
+        info_3 "Docker installed successfully"
+    fi
+    BLA::stop_loading_animation
+    
+    # Start and enable Docker service
+    systemctl start docker
+    systemctl enable docker
+fi
 
 ## Install Seedbox Environment
 tput sgr0; clear
@@ -301,10 +320,6 @@ if [[ ! -z "$qb_install" ]]; then
     mkdir -p /home/$username/qbittorrent/{config,downloads}
     chown -R $username:$username /home/$username/qbittorrent
 
-    # Create temporary password file
-    echo "$password" > /tmp/qb_password.txt
-    chmod 600 /tmp/qb_password.txt
-
     # Run qBittorrent container with environment variables for credentials
     docker run -d \
         --name=qbittorrent \
@@ -334,16 +349,13 @@ if [[ ! -z "$qb_install" ]]; then
     sleep 20
 
     # Verify container is running
-    if [ $(docker inspect -f '{{.State.Running}}' qbittorrent) = "true" ]; then
+    if docker inspect -f '{{.State.Running}}' qbittorrent 2>/dev/null | grep -q "true"; then
         info_3 "qBittorrent container is running"
     else
         warn "qBittorrent container failed to start"
-        docker logs qbittorrent
+        docker logs qbittorrent 2>/dev/null || echo "Could not retrieve container logs"
         exit 1
     fi
-
-    # Clean up password file
-    rm -f /tmp/qb_password.txt
 fi
 
 # autobrr Install
@@ -367,7 +379,7 @@ seperator
 info "Start Doing System Tunning"
 install_ tuned_ "Installing tuned" "/tmp/tuned_error" tuned_success
 install_ set_txqueuelen_ "Setting txqueuelen" "/tmp/txqueuelen_error" txqueuelen_success
-install_ set_file_open_limit_ "Setting File Open Limit" "/tmp/file_open_limit_error" file_open_limit_success
+install_ set_file_open_limit_ "Setting File Open Limit" "/tmp/file_open_limit_error" file_open_limit_ssuccess
 
 # Check for Virtual Environment since some of the tunning might not work on virtual machine
 systemd-detect-virt > /dev/null
