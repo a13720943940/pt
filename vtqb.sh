@@ -195,7 +195,6 @@ while getopts "u:p:c:q:l:rbvx3oh" opt; do
 					break
 				fi
 			done
-		fi
 		;;
 	h ) # process option help
 		info "Help:"
@@ -295,7 +294,6 @@ if [[ ! -z "$qb_install" ]]; then
         qb_incoming_port=45000
     fi
 
-    # Install qBittorrent in Docker container
     info_2 "Installing qBittorrent in Docker container"
     BLA::start_loading_animation "${BLA_classic[@]}"
     
@@ -303,13 +301,19 @@ if [[ ! -z "$qb_install" ]]; then
     mkdir -p /home/$username/qbittorrent/{config,downloads}
     chown -R $username:$username /home/$username/qbittorrent
 
-    # Run qBittorrent container
+    # Create temporary password file
+    echo "$password" > /tmp/qb_password.txt
+    chmod 600 /tmp/qb_password.txt
+
+    # Run qBittorrent container with environment variables for credentials
     docker run -d \
         --name=qbittorrent \
         -e PUID=$(id -u $username) \
         -e PGID=$(id -g $username) \
         -e TZ=Etc/UTC \
         -e WEBUI_PORT=$qb_port \
+        -e WEBUI_USER=$username \
+        -e WEBUI_PASSWORD=$password \
         -p $qb_port:$qb_port \
         -p $qb_incoming_port:$qb_incoming_port \
         -v /home/$username/qbittorrent/config:/config \
@@ -320,33 +324,26 @@ if [[ ! -z "$qb_install" ]]; then
     if [ $? -ne 0 ]; then
         fail_3 "FAIL" 
     else
-        info_3 "Successful"
+        info_3 "Container started successfully"
         export qb_install_success=1
     fi
     BLA::stop_loading_animation
 
     # Wait for container to initialize
-    sleep 10
+    info_2 "Waiting for qBittorrent to initialize..."
+    sleep 20
 
-    # Configure qBittorrent
-    docker exec qbittorrent qbittorrent-nox -d
-    sleep 5
-    docker exec qbittorrent pkill qbittorrent-nox
-    sleep 2
+    # Verify container is running
+    if [ $(docker inspect -f '{{.State.Running}}' qbittorrent) = "true" ]; then
+        info_3 "qBittorrent container is running"
+    else
+        warn "qBittorrent container failed to start"
+        docker logs qbittorrent
+        exit 1
+    fi
 
-    # Set username and password
-    docker exec qbittorrent sed -i "s/WebUI\\\Username=.*/WebUI\\\Username=$username/" /config/qBittorrent.conf
-    docker exec qbittorrent sed -i "s/WebUI\\\Password_ha1=.*/WebUI\\\Password_ha1=$(echo -n $password | md5sum | cut -d' ' -f1)/" /config/qBittorrent.conf
-    docker exec qbittorrent sed -i "s/WebUI\\\Password_PBKDF2=.*/WebUI\\\Password_PBKDF2=$(echo -n $password | pbkdf2-sha256 | cut -d' ' -f1)/" /config/qBittorrent.conf
-
-    # Set cache
-    docker exec qbittorrent sed -i "s/Disk\\\CacheSize=.*/Disk\\\CacheSize=$qb_cache/" /config/qBittorrent.conf
-
-    # Set incoming port
-    docker exec qbittorrent sed -i "s/Connection\\\PortRangeMin=.*/Connection\\\PortRangeMin=$qb_incoming_port/" /config/qBittorrent.conf
-
-    # Restart container
-    docker restart qbittorrent
+    # Clean up password file
+    rm -f /tmp/qb_password.txt
 fi
 
 # autobrr Install
