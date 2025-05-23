@@ -195,7 +195,6 @@ while getopts "u:p:c:q:l:rbvx3oh" opt; do
 					break
 				fi
 			done
-		fi
 		;;
 	h ) # process option help
 		info "Help:"
@@ -231,7 +230,7 @@ while getopts "u:p:c:q:l:rbvx3oh" opt; do
 		info_2 "Example ./Install.sh -u jerry048 -p 1LDw39VOgors -c 3072 -q 4.3.9 -l v1.2.19 -b -v -r -3"
 		exit 1
 		;;
-  esac
+	esac
 done
 
 # System Update & Dependencies Install
